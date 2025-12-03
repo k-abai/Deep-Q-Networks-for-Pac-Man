@@ -62,7 +62,7 @@ def collect_tabular_dataset(layouts : str = None, episodes: int = 500, max_steps
     return dataset
 
 def train_dqn_with_tabular(dataset, obs_shape, n_actions, epochs=10, batch_size=64, 
-        checkpoint: str | None = None,
+        checkpoint: str | None = None, layout_name: str = "classic"
         ):
     """
     Pretrain DQN on (obs, q_vals) tabular targets.
