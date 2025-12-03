@@ -17,3 +17,5 @@ Episode 10: LOSE in 51 steps
 2/10 wins (20.0%)
 
 # ResNet: 
+- Allows us to have a deeper model that trains more efficiently; Essentially having less parameters. This architecture skip happens when number of channels or resolution changes. This promotes better feature reuse, allows learning of "deeper" sentimental features in gameplay thus improving decision making.
+

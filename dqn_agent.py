@@ -5,9 +5,38 @@ from collections import deque
 from typing import Tuple, List
 import numpy as np
 import torch, torch.nn as nn, torch.optim as optim
+import torch.nn.functional as F
+from typing import Tuple
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ------------- Residual Block (optional) -------------
+class ResidualBlock(nn.Module):
+    """
+    A standard Residual Block as used in ResNet architectures.
+    It consists of two convolutional layers with a skip connection.
+    """
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.skip_connection = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.skip_connection = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        skip = self.skip_connection(x)
+        out += skip
+        return F.relu(out)
+    
 # ──────────────── network ────────────────
 class DQN(nn.Module):
     """
@@ -22,7 +51,29 @@ class DQN(nn.Module):
         H = obs_shape[0]  # extract height
         W = obs_shape[1]  # extract width
         # Define convolutional layers
+        # DQN with Residual Blocks
         self.net = nn.Sequential(
+            # Initial Conv Layer
+            nn.Conv2d(C, 64, kernel_size=8, stride=2, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+        )
+        # Residual Blocks
+        self.Res1 = ResidualBlock(64, 64, stride=2),
+        self.Res2 = ResidualBlock(64, 128, stride=1),
+        self.Res3 = ResidualBlock(128, 256, stride=1),
+        self.Res4 = ResidualBlock(256, 512, stride=1),
+        self.Res5 = ResidualBlock(512, 512, stride=1),
+        self.Res6 = ResidualBlock(512, 512, stride=1),
+
+        # Adaptive Pooling to handle variable input sizes
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        # Flatten layer will be applied after avgpool in forward pass
+        self.flatten = nn.Flatten()
+
+        # Default DQN 
+        """self.net = nn.Sequential(
             nn.Conv2d(C, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
@@ -31,7 +82,7 @@ class DQN(nn.Module):
             nn.ReLU(),
             nn.Flatten()
         )
-
+        """
         # Calculate dimension after conv layers using a dummy input
         dummy_input = torch.zeros(1, C, H, W)
         conv_output = self.net(dummy_input)            
@@ -55,6 +106,14 @@ class DQN(nn.Module):
         x = x.float() / 255.0  # Convert to float + normalize to [0, 1]
         x = x.permute(0, 3, 1, 2)  # Rearrange to (B, C, H, W)
         x = self.net(x)
+        x = self.Res1(x)
+        x = self.Res2(x)
+        x = self.Res3(x)
+        x = self.Res4(x)
+        x = self.Res5(x)
+        x = self.Res6(x)
+        x = self.avgpool(x) 
+        x = self.flatten(x)
         x = self.fc(x)
         return x
 
