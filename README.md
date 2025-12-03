@@ -30,3 +30,13 @@ Model device: cuda
 - Original version used trained only on a classic layout. Training over a randomized selection of layouts will increase robustness in model initialization and prevent overfitting, thus improving generalized ResNet DQN performance.
 python train_dqn_with_tabular.py --episodes 25 --epochs 10 --batch_size 64
 
+FINAL RESULTS:
+Wins: 0/10 (0.0%)
+Layout: spiral_harder
+Model device: cuda
+
+# Staged Multi-layout:
+- Pretraining with classic gave better results but I belive increasing robustness by staging a brief multi-layout training staged after will give better results. Non-staged multi-layout training seemed to be too broad as on average pacman would live for many more steps but not win.
+python train_dqn_staged.py --fast
+
+
