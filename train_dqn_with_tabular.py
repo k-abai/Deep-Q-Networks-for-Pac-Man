@@ -1,11 +1,13 @@
 # train_dqn_with_tabular.py
 import pickle
+import random
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tabular_q_learning import TabularQLearning  # tabular agent file
 from pacman_env import PacmanEnv                 # environment file
 from dqn_agent import DQN            # ResNet DQN class
 import argparse
+import random
 """
 Pretrain a DQN using targets from a Tabular Q-learning agent.
 The tabular agent collects Q-values for states in the environment,
@@ -28,24 +30,28 @@ class TabularQDataset(Dataset):
         q_vals = torch.tensor(q_vals, dtype=torch.float32)
         return obs, q_vals
 
-def collect_tabular_dataset(layout: str, episodes: int, max_steps=1000):
-    print(f"Collecting tabular dataset for layout '{layout}' with {episodes} episodes...")
-    tab_agent = TabularQLearning(layout)
-    env = PacmanEnv(layout)
-    dataset = []
+def collect_tabular_dataset(layouts : list = ["classic", "spiral", "spiral_harder", "empty"], episodes: int = 500, max_steps=1000):
+    dataset = [] 
+
+    # Collect data from multiple layouts randomly
     for ep in range(episodes):
+        layout = random.choice(layouts)
+        print(f"Collecting tabular dataset for layout '{layout}' with {episodes} episodes...")
+        tab_agent = TabularQLearning(layout)
+        env = PacmanEnv(layout)
+        
         obs, _ = env.reset()
         done = False
         steps = 0
         while not done and steps < max_steps:
             tab_state = tab_agent._get_state(env)
-            q_vals = [tab_agent.q_table[tab_state][a] for a in range(tab_agent.n_actions)]
+            q_vals = [tab_agent.q_table[tab_state][a] for a in range(tab_agent.n_actions)]                  
             dataset.append((obs, q_vals))
             action = tab_agent.select_action(tab_state)
             obs, reward, done, _, _ = env.step(action)
             steps += 1
-    env.close()
-    print(f"Collected {len(dataset)} samples.")
+        env.close()
+        print(f"Collected {len(dataset)} samples.")
     return dataset
 
 def train_dqn_with_tabular(dataset, obs_shape, n_actions, epochs=10, batch_size=64):
