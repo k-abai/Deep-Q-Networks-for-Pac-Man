@@ -11,7 +11,7 @@ Pretrain a DQN using targets from a Tabular Q-learning agent.
 The tabular agent collects Q-values for states in the environment,
 which are then used to train the DQN in a supervised manner.
 To run: 
-python train_dqn_with_tabular.py --layout classic --episodes 500 --epochs 20 --batch_size 64
+python train_dqn_with_tabular.py --layout classic --episodes 25 --epochs 10 --batch_size 64
 """
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

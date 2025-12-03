@@ -1,24 +1,27 @@
 # Deep-Q-Networks-for-Pac-Man
-EC418 Final Project: DQN for Pac-Man using actor-critic method along with a ResNet
+EC418 Final Project: DQN for Pac-Man using tabular Q learning target method along with a ResNet
 
 # Default: 
-[spiral_harder] Episode  200 | reward =  -42.1
-Episode 1: LOSE in 31 steps
-Episode 2: LOSE in 21 steps
-Episode 3: LOSE in 87 steps
-Episode 4: WIN in 50 steps
-Episode 5: LOSE in 31 steps
-Episode 6: LOSE in 23 steps
-Episode 7: LOSE in 13 steps
-Episode 8: WIN in 28 steps
-Episode 9: LOSE in 59 steps
-Episode 10: LOSE in 51 steps
-
+- Simple DQN utilizing a single CNN
+FINAL RESULTS:
 2/10 wins (20.0%)
+Layout: spiral_harder
+Model device: cpu
 
 # ResNet: 
 - Allows us to have a deeper model that trains more efficiently; Essentially having less parameters. This architecture skip happens when number of channels or resolution changes. This promotes better feature reuse, allows learning of "deeper" sentimental features in gameplay thus improving decision making.
 
 FINAL RESULTS:
 Wins: 1/10 (10.0%) #simplified resnet
+Layout: spiral_harder
+Model device: cuda
+
+# Pre-trained ResNet: 
+- Utilizes tabular q learning as a target to initialize weights in ResNet. Allowing for better convergence.
+python train_dqn_with_tabular.py --layout classic --episodes 25 --epochs 10 --batch_size 64
+
+FINAL RESULTS:
+Wins: 3/10 (30.0%)
+Layout: spiral_harder
+Model device: cuda
 
