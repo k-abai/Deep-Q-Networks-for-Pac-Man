@@ -69,14 +69,15 @@ class PacmanEnv(gym.Env):
         self.h, self.w = self.floor.shape     # board dims
         self.img_h = self.h * PIXELS_PER_CELL
         self.img_w = self.w * PIXELS_PER_CELL
-
+        self.steps_since_last_pellet = 0
+        
         self._build_tiles()                   # pixel‑art sprites
 
         self.action_space = spaces.Discrete(4)
         self.observation_space = spaces.Box(
             0, 255, shape=(self.img_h, self.img_w, 3), dtype=np.uint8
         )
-
+        
         self.rng = np.random.default_rng()
         self.reset()
 
@@ -123,26 +124,41 @@ class PacmanEnv(gym.Env):
 
     # ───────────────────────── step ────────────────────────────
     def step(self, action: int):
-        # move Pac‑Man
+        old_pos = self.pac_pos                    # remember old position
         px, py = self.pac_pos
         if   action == 0: px = max(px-1, 0)
         elif action == 1: px = min(px+1, self.h-1)
         elif action == 2: py = max(py-1, 0)
         elif action == 3: py = min(py+1, self.w-1)
-        if self.floor[px, py]: px, py = self.pac_pos
+        if self.floor[px, py]:                   # hit a wall, no movement
+            px, py = self.pac_pos
         self.pac_pos = (px, py)
-
+        
+        # Base time penalty
         reward, terminated = -0.1, False
         
-        # CHECK 1: Collision immediately after Pac-Man moves
+        # **Penalty for not moving**  
+        if self.pac_pos == old_pos:              # Pac-Man didn't move this step
+            reward -= 0.5                        # extra penalty for stalling
+        
+        # CHECK 1: Ghost collision right after move (existing)
         if self.pac_pos in self.ghost_pos:
             reward -= 50
             terminated = True
             return self._render_board(), reward, terminated, False, {}
         
+        # Pellet collection (existing logic, with reset of inactivity counter)
         if self.pac_pos in self.pellets:
-            self.pellets.remove(self.pac_pos); reward += 10
-            if not self.pellets: reward += 100; terminated = True
+            self.pellets.remove(self.pac_pos)
+            reward += 10
+            self.steps_since_last_pellet = 0     # reset inactivity counter on progress
+            if not self.pellets:
+                reward += 500                    # **increased win bonus from 100 to 200**
+                terminated = True
+        
+        # Increment inactivity counter if no pellet collected
+        if self.pac_pos not in self.pellets:  
+            self.steps_since_last_pellet += 1
 
         # move each ghost
         if not terminated:
@@ -198,6 +214,11 @@ class PacmanEnv(gym.Env):
             if self.pac_pos in self.ghost_pos:
                 reward -= 50
                 terminated = True
+                
+        # **Penalty for prolonged inactivity**  
+        if not terminated and self.steps_since_last_pellet >= 50:
+            reward -= 5                          # penalize 50 timesteps with no progress
+            self.steps_since_last_pellet = 0     # reset counter after penalty
 
         return self._render_board(), reward, terminated, False, {}
 

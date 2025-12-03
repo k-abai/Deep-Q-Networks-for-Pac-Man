@@ -103,7 +103,6 @@ class DQN(nn.Module):
         self.dueling = dueling
         self.resize_to = resize_to
         self.noisy = noisy
-
         # Determine input channels from obs_shape
         if obs_shape is None:
             in_channels = 3
@@ -162,6 +161,7 @@ class DQN(nn.Module):
                 nn.ReLU(inplace=True),
                 Linear(512, n_actions),
             )
+        
     def reset_noise(self):
         """
         Reset noise for all NoisyLinear layers in this network.
@@ -358,9 +358,10 @@ class DQNAgent:
         per_alpha: float = 0.6,
         per_beta_start: float = 0.4,
         per_beta_frames: int = 200_000,
-        n_step: int = 1,
+        n_step: int = 5,
         max_grad_norm: float = 10.0,
         noisy: bool = True,
+        distributional=False
     ):
         self.obs_shape = tuple(obs_shape)
         self.n_actions = n_actions
@@ -376,20 +377,10 @@ class DQNAgent:
         self.noisy = noisy
 
         # Online & target networks
-        self.online_net = DQN(
-            obs_shape,
-            n_actions,
-            dueling=dueling,
-            resize_to=resize_to,
-            noisy=noisy,
-        ).to(DEVICE)
-        self.target_net = DQN(
-            obs_shape,
-            n_actions,
-            dueling=dueling,
-            resize_to=resize_to,
-            noisy=noisy,
-        ).to(DEVICE)
+        self.online_net = DQN(obs_shape, n_actions, dueling=dueling, 
+                               noisy=noisy, **({"distributional": self.atoms} if distributional else {}))
+        self.target_net = DQN(obs_shape, n_actions, dueling=dueling, 
+                               noisy=noisy, **({"distributional": self.atoms} if distributional else {}))
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
 

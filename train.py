@@ -408,22 +408,24 @@ def main():
 
     global_step = 0
 
+    layouts = args.layouts
+    episodes_total = args.episodes_per_layout
+    rounds = 4  # e.g., 4 cycles
+    episodes_per_round = episodes_total // rounds
+
     # Curriculum over layouts
-    for layout in args.layouts:
-        global_step = train_on_layout(
-            layout=layout,
-            agent=agent,
-            episodes=args.episodes_per_layout,
-            max_steps=args.max_steps,
-            global_step_start=global_step,
-            eps_start=args.eps_start,
-            eps_final=args.eps_final,
-            eps_decay_frames=args.eps_decay_frames,
-            print_every=20,
-            render=args.render,
-            render_every=args.render_every,
-            render_speed_ms=args.render_speed,
-        )
+    for r in range(rounds):
+        print(f"\n=== Curriculum Round {r+1}/{rounds} ===")
+        for layout in layouts:
+            # Train on each layout for a fraction of episodes, then switch
+            train_on_layout(layout, agent,
+                            episodes=episodes_per_round,
+                            max_steps=args.max_steps,
+                            global_step_start=global_step,
+                            eps_start=args.eps_start,
+                            eps_final=args.eps_final,
+                            eps_decay_frames=args.eps_decay_frames,
+                            print_every=50)
 
     # Save the final model under all expected filenames
     args.save_dir.mkdir(parents=True, exist_ok=True)
