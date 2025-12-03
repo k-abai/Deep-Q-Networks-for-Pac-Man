@@ -9,6 +9,7 @@ Saved weight files:
 
 from __future__ import annotations
 import argparse, torch, torch.optim as optim
+from email import policy
 from pathlib import Path
 from pacman_env import PacmanEnv
 from dqn_agent import DQN, ReplayMemory, select_action, optimise, DEVICE
@@ -31,6 +32,12 @@ def train_layout(layout: str, episodes: int) -> Path:
     n_actions = env.action_space.n
     print("Created environment")
     policy  = DQN(obs_shape, n_actions).to(DEVICE)
+    
+    # load pretrained weights from tabular Q pretraining ===
+    pretrained_path = "pretrained_dqn_classic.pth"  # path to your pretrained model file
+    policy.load_state_dict(torch.load(pretrained_path, map_location=DEVICE))
+    print("Loaded pretrained weights for ResNet DQN from tabular Q targets")
+    
     target  = DQN(obs_shape, n_actions).to(DEVICE)
     target.load_state_dict(policy.state_dict())
     print("Created policy and target networks")

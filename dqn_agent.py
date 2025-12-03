@@ -6,7 +6,7 @@ from typing import Tuple, List
 import numpy as np
 import torch, torch.nn as nn, torch.optim as optim
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple    
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
