@@ -60,13 +60,12 @@ class DQN(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         )
         # Residual Blocks
-        self.Res1 = ResidualBlock(64, 64, stride=2),
-        self.Res2 = ResidualBlock(64, 128, stride=1),
-        self.Res3 = ResidualBlock(128, 256, stride=1),
-        self.Res4 = ResidualBlock(256, 512, stride=1),
-        self.Res5 = ResidualBlock(512, 512, stride=1),
-        self.Res6 = ResidualBlock(512, 512, stride=1),
-
+        self.Res1 = ResidualBlock(64, 64, stride=2)
+        self.Res2 = ResidualBlock(64, 128, stride=1)
+        self.Res3 = ResidualBlock(128, 256, stride=1)
+        self.Res4 = ResidualBlock(256, 512, stride=1)
+        self.Res5 = ResidualBlock(512, 512, stride=1)
+        self.Res6 = ResidualBlock(512, 512, stride=1)
         # Adaptive Pooling to handle variable input sizes
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         # Flatten layer will be applied after avgpool in forward pass
