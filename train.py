@@ -84,6 +84,6 @@ if __name__ == "__main__":
     episodes = NUM_EPISODES_FAST if args.fast else NUM_EPISODES
 
 
-    for layout in ["spiral_harder"]:
-#    for layout in ["classic", "spiral", "spiral_harder", "empty"]:  
+#    for layout in ["spiral_harder"]:
+    for layout in ["classic", "spiral", "spiral_harder", "empty"]:  
         train_layout(layout, episodes)
