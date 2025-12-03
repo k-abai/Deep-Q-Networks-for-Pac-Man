@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 
 from pacman_env import PacmanEnv
-from dqn_agent import DQNAgent, DQN, DEVICE
+from dqn_agent import DQNAgent, DQN, DEVICE, FrameStack
 
 try:
     import cv2
@@ -110,6 +110,8 @@ def train_on_layout(
     render: bool = False,
     render_every: int = 50,
     render_speed_ms: int = 50,
+    frame_stack: FrameStack = None,
+    scheduler=None,
 ):
     """
     Train agent for a given number of episodes on a single layout.
@@ -134,6 +136,11 @@ def train_on_layout(
     for ep in range(1, episodes + 1):
         obs, _ = env.reset()
         obs = preprocess_obs(obs)
+
+        # Apply frame stacking if enabled
+        if frame_stack is not None:
+            obs = frame_stack.reset(obs)
+
         done = False
         total_reward = 0.0
         steps = 0
@@ -192,12 +199,21 @@ def train_on_layout(
                     cv2.destroyWindow(window_name)
 
             next_obs = preprocess_obs(next_obs)
+
+            # Apply frame stacking if enabled
+            if frame_stack is not None:
+                next_obs = frame_stack.step(next_obs)
+
             done = terminated or truncated
 
             agent.store_transition(obs, action, reward, next_obs, done)
 
             # One training update step (if replay buffer is warm)
             _metrics = agent.update()
+
+            # Step learning rate scheduler if provided
+            if scheduler is not None and _metrics is not None:
+                scheduler.step()
 
             obs = next_obs
             total_reward += reward
@@ -287,14 +303,8 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=64,
+        default=128,
         help="Batch size for updates.",
-    )
-    parser.add_argument(
-        "--learn-start",
-        type=int,
-        default=10_000,
-        help="Steps before starting gradient updates.",
     )
     parser.add_argument(
         "--gamma",
@@ -329,7 +339,7 @@ def main():
     parser.add_argument(
         "--eps-decay-frames",
         type=int,
-        default=200_000,
+        default=1_000_000,
         help="Number of steps over which to linearly decay epsilon.",
     )
     parser.add_argument(
@@ -353,7 +363,7 @@ def main():
     parser.add_argument(
         "--per-beta-frames",
         type=int,
-        default=200_000,
+        default=2_000_000,
         help="Frames over which to anneal beta to 1.0.",
     )
     parser.add_argument(
@@ -361,6 +371,40 @@ def main():
         type=int,
         default=0,
         help="Random seed for reproducibility.",
+    )
+    parser.add_argument(
+        "--frame-stack",
+        type=int,
+        default=4,
+        help="Number of frames to stack (0 to disable frame stacking).",
+    )
+    parser.add_argument(
+        "--grayscale",
+        action="store_true",
+        help="Convert observations to grayscale before stacking.",
+    )
+    parser.add_argument(
+        "--use-lr-scheduler",
+        action="store_true",
+        help="Enable cosine annealing learning rate scheduler.",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.005,
+        help="Soft update coefficient for target network (Polyak averaging).",
+    )
+    parser.add_argument(
+        "--use-soft-update",
+        action="store_true",
+        default=True,
+        help="Use soft target network updates instead of hard sync.",
+    )
+    parser.add_argument(
+        "--learn-start",
+        type=int,
+        default=50_000,
+        help="Steps before starting gradient updates.",
     )
 
     args = parser.parse_args()
@@ -379,8 +423,18 @@ def main():
     n_actions = temp_env.action_space.n
     temp_env.close()
 
-    # Canonical observation shape for training (we always resize to 84x84x3)
-    obs_shape = (FRAME_SIZE, FRAME_SIZE, 3)
+    # Setup frame stacking if enabled
+    frame_stack = None
+    if args.frame_stack > 0:
+        frame_stack = FrameStack(n_frames=args.frame_stack, grayscale=args.grayscale)
+        if args.grayscale:
+            obs_shape = (FRAME_SIZE, FRAME_SIZE, args.frame_stack)
+        else:
+            obs_shape = (FRAME_SIZE, FRAME_SIZE, 3 * args.frame_stack)
+        print(f"Frame stacking enabled: {args.frame_stack} frames, grayscale={args.grayscale}")
+    else:
+        # No frame stacking - use RGB
+        obs_shape = (FRAME_SIZE, FRAME_SIZE, 3)
 
     agent = DQNAgent(
         obs_shape=obs_shape,
@@ -398,13 +452,30 @@ def main():
         per_beta_frames=args.per_beta_frames,
         n_step=args.n_step,
         max_grad_norm=10.0,
-        noisy=True,  # enable NoisyNet by default
+        noisy=True,
+        tau=args.tau,
+        use_soft_update=args.use_soft_update,
     )
+
+    # Setup learning rate scheduler if enabled
+    scheduler = None
+    if args.use_lr_scheduler:
+        # Estimate total training steps for cosine annealing
+        total_steps = args.episodes_per_layout * len(args.layouts) * args.max_steps
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            agent.optimizer, T_max=total_steps, eta_min=1e-6
+        )
+        print(f"Learning rate scheduler enabled (CosineAnnealing, T_max={total_steps})")
 
     print("Using device:", DEVICE)
     print("Training layouts:", args.layouts)
     print("Obs shape (training):", obs_shape)
     print("Actions:", n_actions)
+    print(f"Soft target updates: {args.use_soft_update} (tau={args.tau})")
+    print(f"Epsilon decay over {args.eps_decay_frames:,} frames")
+    print(f"PER beta anneals over {args.per_beta_frames:,} frames")
+    print(f"Learn start: {args.learn_start:,} steps")
+    print(f"Batch size: {args.batch_size}")
 
     global_step = 0
 
@@ -418,14 +489,18 @@ def main():
         print(f"\n=== Curriculum Round {r+1}/{rounds} ===")
         for layout in layouts:
             # Train on each layout for a fraction of episodes, then switch
-            train_on_layout(layout, agent,
-                            episodes=episodes_per_round,
-                            max_steps=args.max_steps,
-                            global_step_start=global_step,
-                            eps_start=args.eps_start,
-                            eps_final=args.eps_final,
-                            eps_decay_frames=args.eps_decay_frames,
-                            print_every=50)
+            global_step = train_on_layout(
+                layout, agent,
+                episodes=episodes_per_round,
+                max_steps=args.max_steps,
+                global_step_start=global_step,
+                eps_start=args.eps_start,
+                eps_final=args.eps_final,
+                eps_decay_frames=args.eps_decay_frames,
+                print_every=50,
+                frame_stack=frame_stack,
+                scheduler=scheduler,
+            )
 
     # Save the final model under all expected filenames
     args.save_dir.mkdir(parents=True, exist_ok=True)

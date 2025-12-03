@@ -30,6 +30,64 @@ import torch.nn.functional as F
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# ───────────────────────── frame stacking ─────────────────────────
+class FrameStack:
+    """
+    Frame stacking utility for temporal information.
+
+    Stacks the last `n_frames` observations to provide temporal context
+    (e.g., velocity of Pac-Man and ghosts).
+
+    Can operate in two modes:
+    - grayscale=True: Converts RGB to grayscale, stacks as (H, W, n_frames)
+    - grayscale=False: Stacks RGB frames as (H, W, n_frames * 3)
+    """
+
+    def __init__(self, n_frames: int = 4, grayscale: bool = True):
+        self.n_frames = n_frames
+        self.grayscale = grayscale
+        self.frames = deque(maxlen=n_frames)
+
+    def reset(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Reset the frame stack with an initial observation.
+        Fills the stack with copies of the initial frame.
+        """
+        frame = self._process_frame(obs)
+        for _ in range(self.n_frames):
+            self.frames.append(frame)
+        return self._get_stacked()
+
+    def step(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Add a new observation and return the stacked frames.
+        """
+        frame = self._process_frame(obs)
+        self.frames.append(frame)
+        return self._get_stacked()
+
+    def _process_frame(self, obs: np.ndarray) -> np.ndarray:
+        """Convert frame to grayscale if needed."""
+        if self.grayscale and obs.ndim == 3 and obs.shape[2] == 3:
+            # RGB to grayscale: 0.299*R + 0.587*G + 0.114*B
+            gray = (
+                0.299 * obs[:, :, 0] +
+                0.587 * obs[:, :, 1] +
+                0.114 * obs[:, :, 2]
+            ).astype(np.uint8)
+            return gray
+        return obs
+
+    def _get_stacked(self) -> np.ndarray:
+        """Stack frames along the last axis."""
+        if self.grayscale:
+            # Stack grayscale frames: (H, W, n_frames)
+            return np.stack(list(self.frames), axis=-1)
+        else:
+            # Stack RGB frames: (H, W, n_frames * 3)
+            return np.concatenate(list(self.frames), axis=-1)
+
+
 # ───────────────────────── Noisy layer ────────────────────
 class NoisyLinear(nn.Module):
     """
@@ -361,7 +419,8 @@ class DQNAgent:
         n_step: int = 5,
         max_grad_norm: float = 10.0,
         noisy: bool = True,
-        distributional=False
+        tau: float = 0.005,
+        use_soft_update: bool = True,
     ):
         self.obs_shape = tuple(obs_shape)
         self.n_actions = n_actions
@@ -376,13 +435,19 @@ class DQNAgent:
         self.gamma_n = gamma ** self.n_step
         self.noisy = noisy
 
-        # Online & target networks
-        self.online_net = DQN(obs_shape, n_actions, dueling=dueling, 
-                               noisy=noisy, **({"distributional": self.atoms} if distributional else {}))
-        self.target_net = DQN(obs_shape, n_actions, dueling=dueling, 
-                               noisy=noisy, **({"distributional": self.atoms} if distributional else {}))
+        # Soft update parameter (Polyak averaging)
+        self.tau = tau
+        self.use_soft_update = use_soft_update
+
+        # Online & target networks (distributional DQN removed - was broken)
+        self.online_net = DQN(obs_shape, n_actions, dueling=dueling, noisy=noisy)
+        self.target_net = DQN(obs_shape, n_actions, dueling=dueling, noisy=noisy)
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
+
+        # Move networks to device
+        self.online_net.to(DEVICE)
+        self.target_net.to(DEVICE)
 
         self.optimizer = torch.optim.Adam(self.online_net.parameters(), lr=lr)
 
@@ -562,8 +627,11 @@ class DQNAgent:
 
         self.optimizer.zero_grad()
         loss.backward()
+        grad_norm = None
         if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.online_net.parameters(), self.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.online_net.parameters(), self.max_grad_norm
+            )
         self.optimizer.step()
 
         # Update priorities based on absolute TD error
@@ -572,8 +640,17 @@ class DQNAgent:
 
         self.num_updates += 1
 
-        # Periodically sync target network
-        if self.num_updates % self.target_sync_interval == 0:
+        # Sync target network (soft or hard update)
+        if self.use_soft_update:
+            # Polyak averaging: θ_target = τ * θ_online + (1 - τ) * θ_target
+            for target_param, online_param in zip(
+                self.target_net.parameters(), self.online_net.parameters()
+            ):
+                target_param.data.copy_(
+                    self.tau * online_param.data + (1.0 - self.tau) * target_param.data
+                )
+        elif self.num_updates % self.target_sync_interval == 0:
+            # Hard update every target_sync_interval steps
             self.target_net.load_state_dict(self.online_net.state_dict())
 
         metrics = {
@@ -581,6 +658,7 @@ class DQNAgent:
             "mean_q": float(q_values.mean().item()),
             "beta": float(self.beta),
             "buffer_size": len(self.replay),
+            "grad_norm": float(grad_norm) if grad_norm is not None else 0.0,
         }
         return metrics
 
