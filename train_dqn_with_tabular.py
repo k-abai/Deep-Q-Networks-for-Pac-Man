@@ -30,7 +30,14 @@ class TabularQDataset(Dataset):
         q_vals = torch.tensor(q_vals, dtype=torch.float32)
         return obs, q_vals
 
-def collect_tabular_dataset(layouts : list = ["classic", "spiral", "spiral_harder", "empty"], episodes: int = 500, max_steps=1000):
+def collect_tabular_dataset(layouts : str = None, episodes: int = 500, max_steps=1000):
+    # Multi-layouts if none provided
+    if layouts is None:
+        layouts = ["classic", "spiral", "spiral_harder", "empty"]
+
+    # If a single layout string is passed, wrap it in a list
+    if isinstance(layouts, str):
+        layouts = [layouts]
     dataset = [] 
 
     # Collect data from multiple layouts randomly
