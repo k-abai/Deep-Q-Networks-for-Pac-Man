@@ -61,11 +61,11 @@ class DQN(nn.Module):
         )
         # Residual Blocks
         self.Res1 = ResidualBlock(64, 64, stride=2)
-        self.Res2 = ResidualBlock(64, 128, stride=1)
-        self.Res3 = ResidualBlock(128, 256, stride=1)
-        self.Res4 = ResidualBlock(256, 512, stride=1)
-        self.Res5 = ResidualBlock(512, 512, stride=1)
-        self.Res6 = ResidualBlock(512, 512, stride=1)
+        self.Res2 = ResidualBlock(64, 64, stride=1)
+        #self.Res3 = ResidualBlock(128, 256, stride=1)
+        #self.Res4 = ResidualBlock(256, 512, stride=1)
+        #self.Res5 = ResidualBlock(512, 512, stride=1)
+        #self.Res6 = ResidualBlock(512, 512, stride=1)
         # Adaptive Pooling to handle variable input sizes
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         # Flatten layer will be applied after avgpool in forward pass
@@ -90,9 +90,9 @@ class DQN(nn.Module):
       
         # Connected layers from conv output to action Q-values
         self.fc = nn.Sequential(
-            nn.Linear(512, 64),
+            nn.Linear(64, 512),
             nn.ReLU(),
-         nn.Linear(64, n_actions)
+         nn.Linear(512, n_actions)
         )
         
     
@@ -108,10 +108,10 @@ class DQN(nn.Module):
         x = self.net(x)
         x = self.Res1(x)
         x = self.Res2(x)
-        x = self.Res3(x)
-        x = self.Res4(x)
-        x = self.Res5(x)
-        x = self.Res6(x)
+        #x = self.Res3(x)
+        #x = self.Res4(x)
+        #x = self.Res5(x)
+        #x = self.Res6(x)
         x = self.avgpool(x) 
         x = self.flatten(x)
         x = self.fc(x)
