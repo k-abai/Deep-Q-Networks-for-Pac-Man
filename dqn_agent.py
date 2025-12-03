@@ -6,15 +6,17 @@ DQN network + agent for visual Pac-Man.
 
 Exposes:
     - DEVICE: torch.device (cuda / cpu)
-    - DQN:    convolutional dueling Q-network
+    - DQN:    convolutional dueling Q-network (optionally with NoisyNet layers)
     - DQNAgent: training wrapper with:
         * Double DQN
         * Prioritized Experience Replay
         * Optional n-step returns
+        * Optional NoisyNet exploration
 """
 
 from __future__ import annotations
 
+import math
 import random
 from collections import deque
 from typing import Optional, Tuple
@@ -26,6 +28,56 @@ import torch.nn.functional as F
 
 # ───────────────────────── device ─────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ───────────────────────── Noisy layer ────────────────────
+class NoisyLinear(nn.Module):
+    """
+    Factorised Gaussian NoisyNet linear layer (Fortunato et al.).
+    Noise is sampled via explicit reset_noise() calls, NOT inside forward.
+    """
+
+    def __init__(self, in_features: int, out_features: int, sigma_init: float = 0.5):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+
+        self.weight_mu = nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_sigma = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias_mu = nn.Parameter(torch.empty(out_features))
+        self.bias_sigma = nn.Parameter(torch.empty(out_features))
+
+        self.register_buffer("weight_epsilon", torch.empty(out_features, in_features))
+        self.register_buffer("bias_epsilon", torch.empty(out_features))
+
+        self.reset_parameters()
+        self.reset_noise()
+
+    def reset_parameters(self):
+        mu_range = 1.0 / math.sqrt(self.in_features)
+        self.weight_mu.data.uniform_(-mu_range, mu_range)
+        self.weight_sigma.data.fill_(0.5 * mu_range)
+
+        self.bias_mu.data.uniform_(-mu_range, mu_range)
+        self.bias_sigma.data.fill_(0.5 * mu_range)
+
+    def _scale_noise(self, size: int) -> torch.Tensor:
+        # No grad, so in-place is safe here
+        x = torch.randn(size, device=self.weight_mu.device)
+        return x.sign().mul_(x.abs().sqrt_())
+
+    def reset_noise(self):
+        eps_in = self._scale_noise(self.in_features)
+        eps_out = self._scale_noise(self.out_features)
+        self.weight_epsilon.copy_(torch.outer(eps_out, eps_in))
+        self.bias_epsilon.copy_(eps_out)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # IMPORTANT: do NOT call reset_noise() here.
+        weight = self.weight_mu + self.weight_sigma * self.weight_epsilon
+        bias = self.bias_mu + self.bias_sigma * self.bias_epsilon
+        return F.linear(x, weight, bias)
+
 
 
 # ───────────────────────── network ────────────────────────
@@ -44,11 +96,13 @@ class DQN(nn.Module):
         n_actions: int,
         dueling: bool = True,
         resize_to: Tuple[int, int] = (84, 84),
+        noisy: bool = True,
     ):
         super().__init__()
         self.n_actions = n_actions
         self.dueling = dueling
         self.resize_to = resize_to
+        self.noisy = noisy
 
         # Determine input channels from obs_shape
         if obs_shape is None:
@@ -68,40 +122,62 @@ class DQN(nn.Module):
 
         self.in_channels = in_channels
 
-        # Convolutional feature extractor (Atari-style)
+        # Convolutional feature extractor (Atari-style + one residual block)
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
         )
+
+        # Extra conv with residual connection (keeps H,W due to padding)
+        self.extra_conv = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
 
         # Compute conv output size using a dummy forward
         dummy_input = torch.zeros(1, in_channels, resize_to[0], resize_to[1])
         with torch.no_grad():
-            conv_out = self.conv(dummy_input)
+            conv_out = self._forward_conv(dummy_input)
         conv_out_size = conv_out.reshape(1, -1).size(1)
         self.conv_out_size = conv_out_size
 
+        Linear = NoisyLinear if noisy else nn.Linear
+
         if dueling:
             self.fc_value = nn.Sequential(
-                nn.Linear(conv_out_size, 256),
-                nn.ReLU(inplace=True),
-                nn.Linear(256, 1),
+            nn.Linear(conv_out_size, 256),
+            nn.ReLU(),
+            Linear(256, 1),
             )
             self.fc_advantage = nn.Sequential(
                 nn.Linear(conv_out_size, 256),
-                nn.ReLU(inplace=True),
-                nn.Linear(256, n_actions),
+                nn.ReLU(),
+                Linear(256, n_actions),
             )
+
         else:
             self.fc = nn.Sequential(
                 nn.Linear(conv_out_size, 512),
                 nn.ReLU(inplace=True),
-                nn.Linear(512, n_actions),
+                Linear(512, n_actions),
             )
+    def reset_noise(self):
+        """
+        Reset noise for all NoisyLinear layers in this network.
+        Call this once per action selection / update.
+        """
+        for m in self.modules():
+            if isinstance(m, NoisyLinear):
+                m.reset_noise()
+    
+    def _forward_conv(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through conv backbone + residual conv.
+        """
+        features = self.conv(x)
+        features = F.relu(self.extra_conv(features) + features)
+        return features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -146,7 +222,7 @@ class DQN(nn.Module):
                     align_corners=False,
                 )
 
-        features = self.conv(x_chw)
+        features = self._forward_conv(x_chw)
         flat = features.reshape(B, -1)
 
         if self.dueling:
@@ -259,6 +335,7 @@ class DQNAgent:
       * Double DQN target computation
       * Prioritized experience replay
       * Optional n-step returns
+      * Optional NoisyNet exploration (applied to fully-connected layers)
 
     This class *doesn't* own the environment – training code should:
       * interact with the env
@@ -283,6 +360,7 @@ class DQNAgent:
         per_beta_frames: int = 200_000,
         n_step: int = 1,
         max_grad_norm: float = 10.0,
+        noisy: bool = True,
     ):
         self.obs_shape = tuple(obs_shape)
         self.n_actions = n_actions
@@ -295,14 +373,23 @@ class DQNAgent:
         self.max_grad_norm = max_grad_norm
         self.n_step = max(1, int(n_step))
         self.gamma_n = gamma ** self.n_step
+        self.noisy = noisy
 
         # Online & target networks
-        self.online_net = DQN(obs_shape, n_actions, dueling=dueling, resize_to=resize_to).to(
-            DEVICE
-        )
-        self.target_net = DQN(obs_shape, n_actions, dueling=dueling, resize_to=resize_to).to(
-            DEVICE
-        )
+        self.online_net = DQN(
+            obs_shape,
+            n_actions,
+            dueling=dueling,
+            resize_to=resize_to,
+            noisy=noisy,
+        ).to(DEVICE)
+        self.target_net = DQN(
+            obs_shape,
+            n_actions,
+            dueling=dueling,
+            resize_to=resize_to,
+            noisy=noisy,
+        ).to(DEVICE)
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
 
@@ -327,9 +414,12 @@ class DQNAgent:
     def act(self, state, epsilon: float = 0.0) -> int:
         """
         Epsilon-greedy action selection.
-        `state` can be a NumPy array or torch tensor matching the env observation.
+        For exploration we use BOTH ε-greedy and NoisyNet noise.
         """
-        self.online_net.eval()
+        # sample fresh noise for this decision (if noisy is enabled)
+        if self.noisy:
+            self.online_net.reset_noise()
+
         if random.random() < epsilon:
             return random.randrange(self.n_actions)
 
@@ -450,12 +540,22 @@ class DQNAgent:
         dones_t = torch.as_tensor(dones, device=DEVICE, dtype=torch.float32)
         weights_t = torch.as_tensor(weights, device=DEVICE, dtype=torch.float32)
 
+        if len(self.replay) < self.learn_start:
+            return None
+
+        self.online_net.train()
+        self._update_beta()
+        
+        # reset noisy layers for this gradient step
+        if self.noisy:
+            self.online_net.reset_noise()
+            self.target_net.reset_noise()
+
         # Current Q-values for taken actions
         q_values = self.online_net(states_t)
         q_values = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            # Double DQN: action selection by online net, evaluation by target net
             next_q_online = self.online_net(next_states_t)
             next_actions = next_q_online.argmax(dim=1)
 

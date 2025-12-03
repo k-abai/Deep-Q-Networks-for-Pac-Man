@@ -142,7 +142,7 @@ class PacmanEnv(gym.Env):
         
         if self.pac_pos in self.pellets:
             self.pellets.remove(self.pac_pos); reward += 10
-            if not self.pellets: reward += 50; terminated = True
+            if not self.pellets: reward += 100; terminated = True
 
         # move each ghost
         if not terminated:

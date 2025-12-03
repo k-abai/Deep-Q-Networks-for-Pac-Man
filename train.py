@@ -6,6 +6,7 @@ Train a visual DQN agent on Pac-Man across multiple layouts using:
   - Dueling Double DQN
   - Prioritized Experience Replay
   - Optional n-step returns
+  - NoisyNet exploration
 
 Usage examples:
 
@@ -114,10 +115,11 @@ def train_on_layout(
     Train agent for a given number of episodes on a single layout.
 
     Returns:
-        global_step (int):pdated total environment steps
+        global_step (int): updated total environment steps
     """
     env = PacmanEnv(layout)
     global_step = global_step_start
+    local_step = 0  # epsilon schedule resets per layout
 
     episode_rewards = []
     episode_wins = []
@@ -138,19 +140,20 @@ def train_on_layout(
         won = False
 
         while not done and steps < max_steps:
-            # Epsilon based on global_step (across all layouts)
+            # Epsilon based on local_step (per-layout), not global_step
             epsilon = linear_epsilon_schedule(
-                global_step,
+                local_step,
                 eps_start=eps_start,
                 eps_final=eps_final,
                 eps_decay_frames=eps_decay_frames,
             )
 
-            # ε-greedy action
+            # ε-greedy action (plus NoisyNet inside the agent)
             action = agent.act(obs, epsilon=epsilon)
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
-                        # ───── optional live rendering ─────
+
+            # ───── optional live rendering ─────
             if render_enabled and (ep % render_every == 0):
                 frame = env.render("rgb_array")          # HWC, RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -188,19 +191,19 @@ def train_on_layout(
                     render_enabled = False
                     cv2.destroyWindow(window_name)
 
-
             next_obs = preprocess_obs(next_obs)
             done = terminated or truncated
 
             agent.store_transition(obs, action, reward, next_obs, done)
 
             # One training update step (if replay buffer is warm)
-            metrics = agent.update()
+            _metrics = agent.update()
 
             obs = next_obs
             total_reward += reward
             steps += 1
             global_step += 1
+            local_step += 1
 
         if done and len(env.pellets) == 0:
             won = True
@@ -211,11 +214,13 @@ def train_on_layout(
         if ep % print_every == 0 or ep == 1 or ep == episodes:
             recent = 100
             avg_reward = (
-                np.mean(episode_rewards[-recent:]) if len(episode_rewards) >= recent
+                np.mean(episode_rewards[-recent:])
+                if len(episode_rewards) >= recent
                 else np.mean(episode_rewards)
             )
             win_rate = (
-                np.mean(episode_wins[-recent:]) if len(episode_wins) >= recent
+                np.mean(episode_wins[-recent:])
+                if len(episode_wins) >= recent
                 else np.mean(episode_wins)
             )
             print(
@@ -393,6 +398,7 @@ def main():
         per_beta_frames=args.per_beta_frames,
         n_step=args.n_step,
         max_grad_norm=10.0,
+        noisy=True,  # enable NoisyNet by default
     )
 
     print("Using device:", DEVICE)
