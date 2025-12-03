@@ -12,6 +12,7 @@ import argparse, torch, torch.optim as optim
 from pathlib import Path
 from pacman_env import PacmanEnv
 from dqn_agent import DQN, ReplayMemory, select_action, optimise, DEVICE
+from torch.optim.lr_scheduler import CosineAnnealingLR 
 
 # ───────── hyper‑parameters ─────────
 NUM_EPISODES      = 1000
@@ -34,6 +35,8 @@ def train_layout(layout: str, episodes: int) -> Path:
     target.load_state_dict(policy.state_dict())
     print("Created policy and target networks")
     optimiser = optim.Adam(policy.parameters(), lr=LR)
+    scheduler = CosineAnnealingLR(optimiser, T_max=episodes, eta_min=1e-6)
+
     memory    = ReplayMemory(MEMORY_CAP)
     print("Created optimizer and memory")
     step = 0
@@ -53,7 +56,7 @@ def train_layout(layout: str, episodes: int) -> Path:
             optimise(memory, policy, target, optimiser, BATCH_SIZE, GAMMA)
             if step % TARGET_FREQ == 0:
                 target.load_state_dict(policy.state_dict())
-
+            scheduler.step() # update learning rate
         if ep % 100 == 0 or ep == episodes:
             print(f"[{layout}] Episode {ep:4d} | reward = {ep_reward:6.1f}")
 
