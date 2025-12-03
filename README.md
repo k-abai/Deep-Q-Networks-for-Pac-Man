@@ -3,6 +3,7 @@ EC418 Final Project: DQN for Pac-Man using tabular Q learning target method alon
 
 # Default: 
 - Simple DQN utilizing a single CNN
+
 FINAL RESULTS:
 2/10 wins (20.0%)
 Layout: spiral_harder
