@@ -85,13 +85,14 @@ class DQN(nn.Module):
         # Calculate dimension after conv layers using a dummy input
         dummy_input = torch.zeros(1, C, H, W)
         conv_output = self.net(dummy_input)            
-        dim = conv_output.shape[1]
+        dim = conv_output.shape[1]  # Adjust based on final conv output size
         
+      
         # Connected layers from conv output to action Q-values
         self.fc = nn.Sequential(
-            nn.Linear(dim, 512),
+            nn.Linear(512, 64),
             nn.ReLU(),
-            nn.Linear(512, n_actions)
+         nn.Linear(64, n_actions)
         )
         
     
