@@ -330,14 +330,14 @@ class PrioritizedReplayMemory:
 
     # ───────────── ε‑greedy & optimise ───────
 
-
+""" #dropped for noisey net
 def select_action(state: np.ndarray, net: DQN, step: int,
                   eps_start : float = 0.1, eps_end: float = 0.01, eps_decay: int = 8000) -> int:
-    """
+    ""
     This function selects an action using an ε-greedy policy. 
     with probability ε, a random action is chosen (exploration),
     and with probability 1-ε, the action with the highest Q-value is chosen (exploitation).
-    """
+    ""
     
     # Calculate current epsilon using decay formula
     eps = eps_end + (eps_start - eps_end) * math.exp(-step / eps_decay)
@@ -348,6 +348,18 @@ def select_action(state: np.ndarray, net: DQN, step: int,
         state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
         q_values = net(state_tensor)
         return int(q_values.argmax().item())
+"""
+def select_action(sate: np.ndarray, net: DQN, step: int,):
+    """
+    Action selection is handled by the NoisyLinear layers in the DQN.
+    Simply reset the noise and select the action with highest Q-value.
+    """
+    with torch.no_grad():
+        state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        q_values = net(state_tensor)
+        return int(q_values.argmax().item())
+
+    
  
 def optimise(memory: PrioritizedReplayMemory,
              policy: DQN,

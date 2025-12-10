@@ -94,3 +94,7 @@ Model device: cuda
 Expand distributional hyperparameters
 
 # Noisy Net Small e-Greedy
+FINAL RESULTS:
+Wins: 59/100 (59.0%)
+Layout: spiral_harder
+Model device: cuda
