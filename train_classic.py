@@ -10,7 +10,7 @@ import argparse, torch, torch.optim as optim
 from email import policy
 from pathlib import Path
 from pacman_env import PacmanEnv
-from dqn_agent import DQN, ReplayMemory, select_action, optimise, DEVICE
+from dqn_agent import DQN, PrioritizedReplayMemory, select_action, optimise, DEVICE
 from torch.optim.lr_scheduler import CosineAnnealingLR 
 
 # ───────── hyper‑parameters ─────────
@@ -24,7 +24,7 @@ LR                = 1e-3
 EPS               = (1.0, 0.05, 8_000)   # ε‑greedy schedule (start, end, decay)
 
 # ───────── single‑layout trainer ─────────
-def train_layout(layout: str, episodes: int) -> Path:
+def train_layout(layout: str = "classic", episodes: int = NUM_EPISODES) -> Path:
     env = PacmanEnv(layout)
     obs_shape = env.observation_space.shape        # (H, W, C)
     n_actions = env.action_space.n
@@ -42,7 +42,7 @@ def train_layout(layout: str, episodes: int) -> Path:
     optimiser = optim.Adam(policy.parameters(), lr=LR)
     scheduler = CosineAnnealingLR(optimiser, T_max=episodes, eta_min=1e-6)
 
-    memory    = ReplayMemory(MEMORY_CAP)
+    memory    = PrioritizedReplayMemory(MEMORY_CAP)
     print("Created optimizer and memory")
     step = 0
     for ep in range(1, episodes + 1):
