@@ -33,7 +33,7 @@ def train_layout(layout: str = "spiral_harder", episodes: int = NUM_EPISODES) ->
     policy  = DQN(obs_shape, n_actions).to(DEVICE)
     
     # load pretrained weights from tabular Q pretraining ===
-    pretrained_path = "pretrained_dqn_spiral.pth"  # path to your pretrained model file
+    pretrained_path = "pretrained_dqn_spiral_harder.pth"  # path to your pretrained model file
     policy.load_state_dict(torch.load(pretrained_path, map_location=DEVICE))
     print("Loaded pretrained weights for ResNet DQN from tabular Q targets")
     
