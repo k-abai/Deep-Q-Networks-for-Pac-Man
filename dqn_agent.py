@@ -390,14 +390,12 @@ def optimise(memory: PrioritizedReplayMemory,
     weights_t   = torch.as_tensor(weights, device=DEVICE, dtype=torch.float32).unsqueeze(1)
 
     # Q(s,a) from current policy
-    policy.reset_noise()
+   
     q_values = policy(states).gather(1, actions)
 
     # ---------- Double DQN target ----------
     with torch.no_grad():
-        # resample noise again for next-state selection
-        policy.reset_noise()
-
+   
         # 1) policy net chooses next actions
         next_q_policy = policy(next_states)                    # [B, |A|]
         next_actions  = next_q_policy.argmax(dim=1, keepdim=True)  # [B, 1]

@@ -11,7 +11,7 @@ import argparse, torch, torch.optim as optim
 from email import policy
 from pathlib import Path
 from pacman_env import PacmanEnv
-from dqn_agent import DQN, PrioritizedReplayMemory, select_action, optimise, DEVICE
+from dqn_agent import DQN, tDQN, PrioritizedReplayMemory, select_action, optimise, DEVICE
 from torch.optim.lr_scheduler import CosineAnnealingLR 
 
 # ───────── hyper‑parameters ─────────
@@ -37,7 +37,7 @@ def train_layout(layout: str = "spiral_harder", episodes: int = NUM_EPISODES) ->
     policy.load_state_dict(torch.load(pretrained_path, map_location=DEVICE))
     print("Loaded pretrained weights for ResNet DQN from tabular Q targets")
     
-    target  = DQN(obs_shape, n_actions).to(DEVICE)
+    target  = tDQN(obs_shape, n_actions).to(DEVICE)
     target.load_state_dict(policy.state_dict())
     print("Created policy and target networks")
     optimiser = optim.Adam(policy.parameters(), lr=LR)
