@@ -119,12 +119,12 @@ class DQN(nn.Module):
         self.net = nn.Sequential(
             # Initial Conv Layer
             nn.Conv2d(C, 64, kernel_size=8, stride=2, padding=3),
-            nn.BatchNorm2d(64),
+
             nn.ReLU(inplace=True),
-            #nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+
         )
         # Residual Blocks
-        self.Res1 = ResidualBlock(64, 64, stride=2)
+        self.Res1 = ResidualBlock(64, 64, stride=1)
         #self.Res2 = ResidualBlock(64, 64, stride=1)
         #self.Res3 = ResidualBlock(128, 256, stride=1)
         #self.Res4 = ResidualBlock(256, 512, stride=1)
@@ -146,10 +146,7 @@ class DQN(nn.Module):
             nn.Flatten()
         )
         """
-        # Calculate dimension after conv layers using a dummy input
-        dummy_input = torch.zeros(1, C, H, W)
-        conv_output = self.net(dummy_input)            
-        dim = conv_output.shape[1]  # Adjust based on final conv output size
+
         
 
         # Noisy head instead of plain Linear
@@ -201,12 +198,12 @@ class tDQN(nn.Module):
         self.net = nn.Sequential(
             # Initial Conv Layer
             nn.Conv2d(C, 64, kernel_size=8, stride=2, padding=3),
-            nn.BatchNorm2d(64),
+ 
             nn.ReLU(inplace=True),
-            #nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            
         )
         # Residual Blocks
-        self.Res1 = ResidualBlock(64, 64, stride=2)
+        self.Res1 = ResidualBlock(64, 64, stride=1)
         #self.Res2 = ResidualBlock(64, 64, stride=1)
         #self.Res3 = ResidualBlock(128, 256, stride=1)
         #self.Res4 = ResidualBlock(256, 512, stride=1)
@@ -228,12 +225,7 @@ class tDQN(nn.Module):
             nn.Flatten()
         )
         """
-        # Calculate dimension after conv layers using a dummy input
-        dummy_input = torch.zeros(1, C, H, W)
-        conv_output = self.net(dummy_input)            
-        dim = conv_output.shape[1]  # Adjust based on final conv output size
-        
-
+ 
         # Linear head instead of Noisy Linear
         self.fc1 = nn.Linear(64, 512)
         self.fc2 = nn.Linear(512, n_actions)
