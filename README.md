@@ -114,3 +114,11 @@ Model device: cuda
 I assume model must overfit and we still have small memory_cap
 
 # Increase memory cap drop 1 Resnet block
+drop a resnet and boost memory cap from 20000 to 200000. 
+
+FINAL RESULTS:
+Wins: 17/100 (17.0%)
+Layout: spiral_harder
+Model device: cuda
+
+
