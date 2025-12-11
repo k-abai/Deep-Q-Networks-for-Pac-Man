@@ -376,7 +376,7 @@ def optimise(memory: PrioritizedReplayMemory,
     """
     # Reset noise for NoisyNet layers
     policy.reset_noise()    
-    target.reset_noise()
+
 
     if len(memory) < batch_size:
         return
