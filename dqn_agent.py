@@ -330,30 +330,24 @@ class PrioritizedReplayMemory:
 
     # ───────────── ε‑greedy & optimise ───────
 
-""" #dropped for noisey net
+
 def select_action(state: np.ndarray, net: DQN, step: int,
                   eps_start : float = 0.1, eps_end: float = 0.01, eps_decay: int = 8000) -> int:
-    ""
+    """
     This function selects an action using an ε-greedy policy. 
     with probability ε, a random action is chosen (exploration),
-    and with probability 1-ε, the action with the highest Q-value is chosen (exploitation).
-    ""
+    and with probability 1-ε, the action with the highest Q-value is chosen (exploitation) -
+    also supports NoisyNet exploration by resampling noise for each decision.
+    """
     
     # Calculate current epsilon using decay formula
     eps = eps_end + (eps_start - eps_end) * math.exp(-step / eps_decay)
     if random.random() < eps:
         return random.randrange(net.n_actions)
+    
+    # NoisyNet exploration: resample noise for this decision
+    net.reset_noise()
 
-    with torch.no_grad():
-        state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-        q_values = net(state_tensor)
-        return int(q_values.argmax().item())
-"""
-def select_action(sate: np.ndarray, net: DQN, step: int,):
-    """
-    Action selection is handled by the NoisyLinear layers in the DQN.
-    Simply reset the noise and select the action with highest Q-value.
-    """
     with torch.no_grad():
         state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
         q_values = net(state_tensor)
@@ -396,10 +390,14 @@ def optimise(memory: PrioritizedReplayMemory,
     weights_t   = torch.as_tensor(weights, device=DEVICE, dtype=torch.float32).unsqueeze(1)
 
     # Q(s,a) from current policy
-    q_values = policy(states).gather(1, actions)  # [B,1]
+    policy.reset_noise()
+    q_values = policy(states).gather(1, actions)
 
     # ---------- Double DQN target ----------
     with torch.no_grad():
+        # resample noise again for next-state selection
+        policy.reset_noise()
+
         # 1) policy net chooses next actions
         next_q_policy = policy(next_states)                    # [B, |A|]
         next_actions  = next_q_policy.argmax(dim=1, keepdim=True)  # [B, 1]

@@ -98,3 +98,11 @@ FINAL RESULTS:
 Wins: 59/100 (59.0%)
 Layout: spiral_harder
 Model device: cuda
+
+# Remove e-Greedy
+FINAL RESULTS:
+Wins: 9/100 (9.0%)
+Layout: spiral_harder
+Model device: cuda
+
+# Noisey net small e-Greedy (patched)
