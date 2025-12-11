@@ -106,3 +106,11 @@ Layout: spiral_harder
 Model device: cuda
 
 # Noisey net small e-Greedy (patched)
+FINAL RESULTS:
+Wins: 32/100 (32.0%)
+Layout: spiral_harder
+Model device: cuda
+
+I assume model must overfit and we still have small memory_cap
+
+# Increase memory cap drop 1 Resnet block

@@ -125,7 +125,7 @@ class DQN(nn.Module):
         )
         # Residual Blocks
         self.Res1 = ResidualBlock(64, 64, stride=2)
-        self.Res2 = ResidualBlock(64, 64, stride=1)
+        #self.Res2 = ResidualBlock(64, 64, stride=1)
         #self.Res3 = ResidualBlock(128, 256, stride=1)
         #self.Res4 = ResidualBlock(256, 512, stride=1)
         #self.Res5 = ResidualBlock(512, 512, stride=1)
@@ -374,6 +374,9 @@ def optimise(memory: PrioritizedReplayMemory,
     - Compute standard DQN TD targets with the target network.
     - Update priorities p_i <- |δ_i|.
     """
+    # Reset noise for NoisyNet layers
+    policy.reset_noise()    
+    target.reset_noise()
 
     if len(memory) < batch_size:
         return
@@ -406,7 +409,7 @@ def optimise(memory: PrioritizedReplayMemory,
 
         # 3) TD target
         target_values = rewards + (1.0 - dones) * gamma * max_next_q_values  # [B]
-
+    
     target_values = target_values.unsqueeze(1)  # [B,1]
 
     # TD error
