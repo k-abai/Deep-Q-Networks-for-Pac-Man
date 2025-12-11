@@ -37,7 +37,7 @@ def train_layout(layout: str = "classic", episodes: int = NUM_EPISODES) -> Path:
     print("Loaded pretrained weights for ResNet DQN from tabular Q targets")
     
     target  = tDQN(obs_shape, n_actions).to(DEVICE)
-    target.load_state_dict(policy.state_dict())
+    target.load_state_dict(policy.state_dict(), strict=False)
     print("Created policy and target networks")
     optimiser = optim.Adam(policy.parameters(), lr=LR)
     scheduler = CosineAnnealingLR(optimiser, T_max=episodes, eta_min=1e-6)

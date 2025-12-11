@@ -357,7 +357,7 @@ def select_action(state: np.ndarray, net: DQN, step: int,
  
 def optimise(memory: PrioritizedReplayMemory,
              policy: DQN,
-             target: DQN,
+             target: tDQN,
              optimiser: optim.Optimizer,
              batch_size: int,
              gamma: float,
