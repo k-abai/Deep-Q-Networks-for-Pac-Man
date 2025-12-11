@@ -61,7 +61,7 @@ def train_layout(layout: str = "spiral_harder", episodes: int = NUM_EPISODES) ->
 
             optimise(memory, policy, target, optimiser, BATCH_SIZE, GAMMA)
             if step % TARGET_FREQ == 0:
-                target.load_state_dict(policy.state_dict())
+                target.load_state_dict(policy.state_dict(), strict=False)
             scheduler.step() # update learning rate
         if ep % 100 == 0 or ep == episodes:
             print(f"[{layout}] Episode {ep:4d} | reward = {ep_reward:6.1f}")
