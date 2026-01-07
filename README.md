@@ -1,6 +1,23 @@
 # Deep-Q-Networks-for-Pac-Man
 EC418 Final Project: DQN for Pac-Man using tabular Q learning target method along with a ResNet
 
+## Why This Project Matters
+
+This project goes beyond achieving performance improvements in a reinforcement
+learning benchmark. Its primary contribution is demonstrating how **reproducible
+experimentation, systematic ablation, and curriculum design** can dramatically
+affect stability and learning outcomes in deep RL systems. Rather than taking a results oriented approach
+this proves a strong process oriented understanding.
+
+Rather than treating training instability as a hyperparameter issue, this work
+investigates why and how different architectural and algorithmic choices
+succeed or fail under sparse rewards and complex dynamics. 
+
+The methods used in this project generalize to real-world ML systems
+where instability, overfitting, and misleading evaluation metrics can derail
+otherwise promising approaches.
+
+
 # Default: 
 - Simple DQN utilizing a single CNN
 
