@@ -69,15 +69,14 @@ class PacmanEnv(gym.Env):
         self.h, self.w = self.floor.shape     # board dims
         self.img_h = self.h * PIXELS_PER_CELL
         self.img_w = self.w * PIXELS_PER_CELL
-        self.steps_since_last_pellet = 0
-        
+
         self._build_tiles()                   # pixel‑art sprites
 
         self.action_space = spaces.Discrete(4)
         self.observation_space = spaces.Box(
             0, 255, shape=(self.img_h, self.img_w, 3), dtype=np.uint8
         )
-        
+
         self.rng = np.random.default_rng()
         self.reset()
 
@@ -89,22 +88,6 @@ class PacmanEnv(gym.Env):
             if 0 <= nx < self.h and 0 <= ny < self.w and self.floor[nx, ny] == 0:
                 out.append((nx, ny))
         return out
-
-    def _manhattan_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
-        """Calculate Manhattan distance between two positions."""
-        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-
-    def _nearest_pellet_distance(self, pos: Tuple[int, int]) -> float:
-        """Return distance to the nearest pellet, or inf if no pellets."""
-        if not self.pellets:
-            return float('inf')
-        return min(self._manhattan_distance(pos, p) for p in self.pellets)
-
-    def _min_ghost_distance(self, pos: Tuple[int, int]) -> float:
-        """Return distance to the nearest ghost."""
-        if not self.ghost_pos:
-            return float('inf')
-        return min(self._manhattan_distance(pos, g) for g in self.ghost_pos)
 
     # ───────────────────────── reset ────────────────────────────
     def reset(self, *, seed=None, options=None):
@@ -140,59 +123,26 @@ class PacmanEnv(gym.Env):
 
     # ───────────────────────── step ────────────────────────────
     def step(self, action: int):
-        old_pos = self.pac_pos                    # remember old position
-        old_pellet_dist = self._nearest_pellet_distance(old_pos)
-        old_ghost_dist = self._min_ghost_distance(old_pos)
-
+        # move Pac‑Man
         px, py = self.pac_pos
         if   action == 0: px = max(px-1, 0)
         elif action == 1: px = min(px+1, self.h-1)
         elif action == 2: py = max(py-1, 0)
         elif action == 3: py = min(py+1, self.w-1)
-        if self.floor[px, py]:                   # hit a wall, no movement
-            px, py = self.pac_pos
+        if self.floor[px, py]: px, py = self.pac_pos
         self.pac_pos = (px, py)
 
-        # Base time penalty
         reward, terminated = -0.1, False
-
-        # Penalty for not moving (hitting wall or same position)
-        if self.pac_pos == old_pos:
-            reward -= 0.3                        # reduced from 0.5
-
-        # CHECK 1: Ghost collision right after move
+        
+        # CHECK 1: Collision immediately after Pac-Man moves
         if self.pac_pos in self.ghost_pos:
             reward -= 50
             terminated = True
             return self._render_board(), reward, terminated, False, {}
-
-        # Pellet collection
+        
         if self.pac_pos in self.pellets:
-            self.pellets.remove(self.pac_pos)
-            reward += 10
-            self.steps_since_last_pellet = 0     # reset inactivity counter
-            if not self.pellets:
-                reward += 500                    # win bonus
-                terminated = True
-        else:
-            # Distance-based shaping: reward for moving closer to pellets
-            new_pellet_dist = self._nearest_pellet_distance(self.pac_pos)
-            if new_pellet_dist < old_pellet_dist:
-                reward += 0.5                    # reward for approaching pellet
-            elif new_pellet_dist > old_pellet_dist and self.pac_pos != old_pos:
-                reward -= 0.2                    # penalty for moving away
-
-        # Ghost avoidance shaping (only when ghosts are close)
-        new_ghost_dist = self._min_ghost_distance(self.pac_pos)
-        if old_ghost_dist <= 3:                  # only when ghost was close
-            if new_ghost_dist > old_ghost_dist:
-                reward += 0.3                    # reward for escaping
-            elif new_ghost_dist < old_ghost_dist:
-                reward -= 0.3                    # penalty for approaching danger
-
-        # Increment inactivity counter if no pellet collected
-        if self.pac_pos not in self.pellets:
-            self.steps_since_last_pellet += 1
+            self.pellets.remove(self.pac_pos); reward += 10
+            if not self.pellets: reward += 50; terminated = True
 
         # move each ghost
         if not terminated:
@@ -248,11 +198,6 @@ class PacmanEnv(gym.Env):
             if self.pac_pos in self.ghost_pos:
                 reward -= 50
                 terminated = True
-                
-        # **Penalty for prolonged inactivity**  
-        if not terminated and self.steps_since_last_pellet >= 50:
-            reward -= 5                          # penalize 50 timesteps with no progress
-            self.steps_since_last_pellet = 0     # reset counter after penalty
 
         return self._render_board(), reward, terminated, False, {}
 

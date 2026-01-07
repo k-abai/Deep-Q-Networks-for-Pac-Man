@@ -144,24 +144,7 @@ class TabularQLearning:
         - Returns action number (0=UP, 1=DOWN, 2=LEFT, 3=RIGHT)
         """
         
-        if np.random.random() < self.epsilon:
-            a = int(np.random.randint(self.n_actions))
-            if debug:
-                print(f"[select_action] explore -> {a}")
-            return a
-
-        q_values = [self.q_table[state][a] for a in range(self.n_actions)]
-
-        if all(q == 0.0 for q in q_values):
-            a = int(np.random.randint(self.n_actions))
-            if debug:
-                print(f"[select_action] unseen state -> random {a}")
-            return a
-
-        a = int(np.argmax(q_values))
-        if debug:
-            print(f"[select_action] exploit -> argmax {a} with q={q_values}")
-        return a
+        return 0  # Replace with actual implementation
     
     def update_q_value(self, state: Tuple, action: int, reward: float, 
                       next_state: Tuple, done: bool):
@@ -190,16 +173,8 @@ class TabularQLearning:
         RETURN TYPE: None (this function modifies self.q_table in-place)
         """
         
-        current_q = self.q_table[state][action]
-
-        if done:
-            target = reward
-        else:
-            next_max = max(self.q_table[next_state][a] for a in range(self.n_actions))
-            target = reward + self.gamma * next_max
-
-        self.q_table[state][action] = current_q + self.alpha * (target - current_q)
-        
+        pass  # Replace with actual implementation
+    
     def decay_epsilon(self):
         """
         TODO: IMPLEMENT THIS FUNCTION
@@ -217,10 +192,15 @@ class TabularQLearning:
         - self.epsilon_min: float (minimum allowed exploration rate, e.g., 0.01)
         - self.epsilon_decay: float (decay factor, e.g., 0.995 means multiply by 0.995 each episode)
         
+        
+
+        
+
+        
         RETURN TYPE: None (this function modifies self.epsilon in-place)
         """
 
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        pass  # Replace with actual implementation
     
     def train(self, episodes: int, verbose: bool = True) -> Dict:
         """Train the Q-learning agent."""

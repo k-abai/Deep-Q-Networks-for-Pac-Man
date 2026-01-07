@@ -1,678 +1,421 @@
-#!/usr/bin/env python
-"""
-dqn_agent.py
-
-DQN network + agent for visual Pac-Man.
-
-Exposes:
-    - DEVICE: torch.device (cuda / cpu)
-    - DQN:    convolutional dueling Q-network (optionally with NoisyNet layers)
-    - DQNAgent: training wrapper with:
-        * Double DQN
-        * Prioritized Experience Replay
-        * Optional n-step returns
-        * Optional NoisyNet exploration
-"""
-
+# dqn_agent.py  –  network, replay buffer, ε‑greedy, optimiser
 from __future__ import annotations
-
-import math
-import random
+import math, random
 from collections import deque
-from typing import Optional, Tuple
-
+from typing import Tuple, List
 import numpy as np
-import torch
-import torch.nn as nn
+import torch, torch.nn as nn, torch.optim as optim
 import torch.nn.functional as F
+from typing import Tuple    
 
-# ───────────────────────── device ─────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+"""
+# Distributional RL (C51-style) hyperparameters
+V_MIN     = -1000.0   # lower support bound (tune as needed)
+V_MAX     =  1000.0   # upper support bound (tune as needed)
+N_ATOMS   = 51      # number of atoms
+DELTA_Z   = (V_MAX - V_MIN) / (N_ATOMS - 1)
+"""
 
-# ───────────────────────── frame stacking ─────────────────────────
-class FrameStack:
+
+# ------------- Residual Block (optional) -------------
+class ResidualBlock(nn.Module):
     """
-    Frame stacking utility for temporal information.
-
-    Stacks the last `n_frames` observations to provide temporal context
-    (e.g., velocity of Pac-Man and ghosts).
-
-    Can operate in two modes:
-    - grayscale=True: Converts RGB to grayscale, stacks as (H, W, n_frames)
-    - grayscale=False: Stacks RGB frames as (H, W, n_frames * 3)
+    A standard Residual Block as used in ResNet architectures.
+    It consists of two convolutional layers with a skip connection.
     """
-
-    def __init__(self, n_frames: int = 4, grayscale: bool = True):
-        self.n_frames = n_frames
-        self.grayscale = grayscale
-        self.frames = deque(maxlen=n_frames)
-
-    def reset(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Reset the frame stack with an initial observation.
-        Fills the stack with copies of the initial frame.
-        """
-        frame = self._process_frame(obs)
-        for _ in range(self.n_frames):
-            self.frames.append(frame)
-        return self._get_stacked()
-
-    def step(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Add a new observation and return the stacked frames.
-        """
-        frame = self._process_frame(obs)
-        self.frames.append(frame)
-        return self._get_stacked()
-
-    def _process_frame(self, obs: np.ndarray) -> np.ndarray:
-        """Convert frame to grayscale if needed."""
-        if self.grayscale and obs.ndim == 3 and obs.shape[2] == 3:
-            # RGB to grayscale: 0.299*R + 0.587*G + 0.114*B
-            gray = (
-                0.299 * obs[:, :, 0] +
-                0.587 * obs[:, :, 1] +
-                0.114 * obs[:, :, 2]
-            ).astype(np.uint8)
-            return gray
-        return obs
-
-    def _get_stacked(self) -> np.ndarray:
-        """Stack frames along the last axis."""
-        if self.grayscale:
-            # Stack grayscale frames: (H, W, n_frames)
-            return np.stack(list(self.frames), axis=-1)
-        else:
-            # Stack RGB frames: (H, W, n_frames * 3)
-            return np.concatenate(list(self.frames), axis=-1)
-
-
-# ───────────────────────── Noisy layer ────────────────────
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.skip_connection = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.skip_connection = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        skip = self.skip_connection(x)
+        out += skip
+        return F.relu(out)
+    
+# --------------- noise network block ---------------
 class NoisyLinear(nn.Module):
     """
-    Factorised Gaussian NoisyNet linear layer (Fortunato et al.).
-    Noise is sampled via explicit reset_noise() calls, NOT inside forward.
+    Factorized Noisy Linear layer (Fortunato et al., 2017).
+    Used to replace standard Linear layers for exploration.
     """
-
     def __init__(self, in_features: int, out_features: int, sigma_init: float = 0.5):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
 
+        # Learnable parameters: mu and sigma for weights and biases
         self.weight_mu = nn.Parameter(torch.empty(out_features, in_features))
         self.weight_sigma = nn.Parameter(torch.empty(out_features, in_features))
         self.bias_mu = nn.Parameter(torch.empty(out_features))
         self.bias_sigma = nn.Parameter(torch.empty(out_features))
 
+        # Non-learnable buffers for noise
         self.register_buffer("weight_epsilon", torch.empty(out_features, in_features))
         self.register_buffer("bias_epsilon", torch.empty(out_features))
 
-        self.reset_parameters()
+        # Initialization
+        self.reset_parameters(sigma_init)
         self.reset_noise()
 
-    def reset_parameters(self):
-        mu_range = 1.0 / math.sqrt(self.in_features)
+    def reset_parameters(self, sigma_init: float):
+        # Recommended initialization from the paper
+        mu_range = 1 / math.sqrt(self.in_features)
         self.weight_mu.data.uniform_(-mu_range, mu_range)
-        self.weight_sigma.data.fill_(0.5 * mu_range)
-
         self.bias_mu.data.uniform_(-mu_range, mu_range)
-        self.bias_sigma.data.fill_(0.5 * mu_range)
+
+        self.weight_sigma.data.fill_(sigma_init / math.sqrt(self.in_features))
+        self.bias_sigma.data.fill_(sigma_init / math.sqrt(self.out_features))
 
     def _scale_noise(self, size: int) -> torch.Tensor:
-        # No grad, so in-place is safe here
         x = torch.randn(size, device=self.weight_mu.device)
-        return x.sign().mul_(x.abs().sqrt_())
+        return x.sign() * x.abs().sqrt()  # f(x) = sign(x) * sqrt(|x|)
 
     def reset_noise(self):
+        # Factorized: eps_w = f(eps_in) ⊗ f(eps_out)
         eps_in = self._scale_noise(self.in_features)
         eps_out = self._scale_noise(self.out_features)
-        self.weight_epsilon.copy_(torch.outer(eps_out, eps_in))
+        self.weight_epsilon.copy_(eps_out.unsqueeze(1) * eps_in.unsqueeze(0))
         self.bias_epsilon.copy_(eps_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # IMPORTANT: do NOT call reset_noise() here.
-        weight = self.weight_mu + self.weight_sigma * self.weight_epsilon
-        bias = self.bias_mu + self.bias_sigma * self.bias_epsilon
-        return F.linear(x, weight, bias)
+        if self.training:
+            w = self.weight_mu + self.weight_sigma * self.weight_epsilon
+            b = self.bias_mu + self.bias_sigma * self.bias_epsilon
+        else:
+            # At eval time, use deterministic weights (no noise)
+            w = self.weight_mu
+            b = self.bias_mu
+        return F.linear(x, w, b)
 
-
-
-# ───────────────────────── network ────────────────────────
+# ──────────────── network ────────────────
 class DQN(nn.Module):
     """
-    Convolutional Dueling DQN network that works directly on image observations.
-
-    * Accepts inputs in HWC (gym-style) or CHW format, with optional batch dimension.
-    * Internally resizes all inputs to `resize_to` (default 84×84) so a single
-      set of weights can generalise across different board sizes.
+    This class defines the Deep Q-Network (DQN) architecture.
+    It processes input observations (images) and outputs Q-values for each action.
     """
-
-    def __init__(
-        self,
-        obs_shape,
-        n_actions: int,
-        dueling: bool = True,
-        resize_to: Tuple[int, int] = (84, 84),
-        noisy: bool = True,
-    ):
+    def __init__(self, obs_shape: Tuple[int, int, int], n_actions: int):
         super().__init__()
+        # TODO: Implement network architecture
         self.n_actions = n_actions
-        self.dueling = dueling
-        self.resize_to = resize_to
-        self.noisy = noisy
-        # Determine input channels from obs_shape
-        if obs_shape is None:
-            in_channels = 3
-        elif len(obs_shape) == 3:
-            # (H, W, C) – common for Gym image observations
-            in_channels = obs_shape[2]
-        elif len(obs_shape) == 1:
-            # already channels-only
-            in_channels = obs_shape[0]
-        elif len(obs_shape) == 2:
-            # (H, W) – assume grayscale
-            in_channels = 1
-        else:
-            # fallback: last dimension
-            in_channels = obs_shape[-1]
+        C = obs_shape[2]  # extract channels
+        H = obs_shape[0]  # extract height
+        W = obs_shape[1]  # extract width
+        # Define convolutional layers
+        # DQN with Residual Blocks
+        self.net = nn.Sequential(
+            # Initial Conv Layer
+            nn.Conv2d(C, 64, kernel_size=8, stride=2, padding=3),
 
-        self.in_channels = in_channels
+            nn.ReLU(inplace=True),
 
-        # Convolutional feature extractor (Atari-style + one residual block)
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
+        )
+        # Residual Blocks
+        self.Res1 = ResidualBlock(64, 64, stride=1)
+        #self.Res2 = ResidualBlock(64, 64, stride=1)
+        #self.Res3 = ResidualBlock(128, 256, stride=1)
+        #self.Res4 = ResidualBlock(256, 512, stride=1)
+        #self.Res5 = ResidualBlock(512, 512, stride=1)
+        #self.Res6 = ResidualBlock(512, 512, stride=1)
+        # Adaptive Pooling to handle variable input sizes
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        # Flatten layer will be applied after avgpool in forward pass
+        self.flatten = nn.Flatten()
+
+        # Default DQN 
+        """self.net = nn.Sequential(
+            nn.Conv2d(C, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU(),
+            nn.Flatten()
         )
+        """
 
-        # Extra conv with residual connection (keeps H,W due to padding)
-        self.extra_conv = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-
-        # Compute conv output size using a dummy forward
-        dummy_input = torch.zeros(1, in_channels, resize_to[0], resize_to[1])
-        with torch.no_grad():
-            conv_out = self._forward_conv(dummy_input)
-        conv_out_size = conv_out.reshape(1, -1).size(1)
-        self.conv_out_size = conv_out_size
-
-        Linear = NoisyLinear if noisy else nn.Linear
-
-        if dueling:
-            self.fc_value = nn.Sequential(
-            nn.Linear(conv_out_size, 256),
-            nn.ReLU(),
-            Linear(256, 1),
-            )
-            self.fc_advantage = nn.Sequential(
-                nn.Linear(conv_out_size, 256),
-                nn.ReLU(),
-                Linear(256, n_actions),
-            )
-
-        else:
-            self.fc = nn.Sequential(
-                nn.Linear(conv_out_size, 512),
-                nn.ReLU(inplace=True),
-                Linear(512, n_actions),
-            )
         
+
+        # Noisy head instead of plain Linear
+        self.fc1 = NoisyLinear(64, 512)
+        self.fc2 = NoisyLinear(512, n_actions)
+
     def reset_noise(self):
         """
-        Reset noise for all NoisyLinear layers in this network.
-        Call this once per action selection / update.
+        Resample noise for all noisy layers.
+        Call this once per step (for policy net) and occasionally for target net.
         """
-        for m in self.modules():
-            if isinstance(m, NoisyLinear):
-                m.reset_noise()
+        self.fc1.reset_noise()
+        self.fc2.reset_noise()
+        
     
-    def _forward_conv(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         """
-        Forward pass through conv backbone + residual conv.
-        """
-        features = self.conv(x)
-        features = F.relu(self.extra_conv(features) + features)
-        return features
+        Forward pass through the network.
+        Input: x - tensor of shape (B, H, W, C) with pixel values [0, 255]
+        Output: tensor of shape (B, n_actions) with Q-values for each action.       
+        """        
+        # Forward pass through the network
+        x = x.float() / 255.0  # Convert to float + normalize to [0, 1]
+        x = x.permute(0, 3, 1, 2)  # Rearrange to (B, C, H, W)
+        x = self.net(x)
+        x = self.Res1(x)
+        #x = self.Res2(x)
+        x = self.avgpool(x)
+        x = self.flatten(x)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x) 
+        return x
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Accepts:
-            * (H, W, C)
-            * (B, H, W, C)
-            * (B, C, H, W)
-
-        Returns:
-            Q-values of shape (B, n_actions)
-        """
-        if x.dim() == 3:
-            x = x.unsqueeze(0)
-        if x.dim() != 4:
-            raise ValueError(f"expected input dim 3 or 4, got {x.shape}")
-
-        # Move to float and normalise from [0,255] to [0,1] if needed
-        x = x.float()
-        if x.max() > 1.0:
-            x = x / 255.0
-
-        B = x.shape[0]
-
-        # Detect channel position.
-        # If second dim matches in_channels (1,3,4) assume (B, C, H, W),
-        # otherwise assume (B, H, W, C).
-        if x.shape[1] in (1, 3, 4) and x.shape[1] == self.in_channels:
-            x_chw = x
-        else:
-            x_chw = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
-
-        # Resize to canonical size if needed
-        if self.resize_to is not None:
-            h, w = x_chw.shape[2], x_chw.shape[3]
-            if (h, w) != self.resize_to:
-                x_chw = F.interpolate(
-                    x_chw,
-                    size=self.resize_to,
-                    mode="bilinear",
-                    align_corners=False,
-                )
-
-        features = self._forward_conv(x_chw)
-        flat = features.reshape(B, -1)
-
-        if self.dueling:
-            value = self.fc_value(flat)  # (B, 1)
-            advantage = self.fc_advantage(flat)  # (B, n_actions)
-            advantage_mean = advantage.mean(dim=1, keepdim=True)
-            q_values = value + (advantage - advantage_mean)
-        else:
-            q_values = self.fc(flat)
-
-        return q_values
-
-
-# ───────────────────────── replay buffer ────────────────────────
-class PrioritizedReplayBuffer:
+# ──────────────── target network ────────────────
+class tDQN(nn.Module):
     """
-    Simple proportional prioritized replay buffer.
-
-    Sampling uses probabilities p_i^alpha / sum_j p_j^alpha.
-    Importance-sampling (IS) weights are returned to correct the bias.
+    This class defines the target Deep Q-Network (tDQN) architecture. NO NOISY LAYERS.
+    It processes input observations (images) and outputs Q-values for each action.
     """
+    def __init__(self, obs_shape: Tuple[int, int, int], n_actions: int):
+        super().__init__()
+        # TODO: Implement network architecture
+        self.n_actions = n_actions
+        C = obs_shape[2]  # extract channels
+        H = obs_shape[0]  # extract height
+        W = obs_shape[1]  # extract width
+        # Define convolutional layers
+        # DQN with Residual Blocks
+        self.net = nn.Sequential(
+            # Initial Conv Layer
+            nn.Conv2d(C, 64, kernel_size=8, stride=2, padding=3),
+ 
+            nn.ReLU(inplace=True),
+            
+        )
+        # Residual Blocks
+        self.Res1 = ResidualBlock(64, 64, stride=1)
+        #self.Res2 = ResidualBlock(64, 64, stride=1)
+        #self.Res3 = ResidualBlock(128, 256, stride=1)
+        #self.Res4 = ResidualBlock(256, 512, stride=1)
+        #self.Res5 = ResidualBlock(512, 512, stride=1)
+        #self.Res6 = ResidualBlock(512, 512, stride=1)
+        # Adaptive Pooling to handle variable input sizes
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        # Flatten layer will be applied after avgpool in forward pass
+        self.flatten = nn.Flatten()
 
-    def __init__(
-        self,
-        capacity: int,
-        obs_shape: Tuple[int, ...],
-        alpha: float = 0.6,
-    ):
+        # Default DQN 
+        """self.net = nn.Sequential(
+            nn.Conv2d(C, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        """
+ 
+        # Linear head instead of Noisy Linear
+        self.fc1 = nn.Linear(64, 512)
+        self.fc2 = nn.Linear(512, n_actions)
+    
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass through the network.
+        Input: x - tensor of shape (B, H, W, C) with pixel values [0, 255]
+        Output: tensor of shape (B, n_actions) with Q-values for each action.       
+        """        
+        # Forward pass through the network
+        x = x.float() / 255.0  # Convert to float + normalize to [0, 1]
+        x = x.permute(0, 3, 1, 2)  # Rearrange to (B, C, H, W)
+        x = self.net(x)
+        x = self.Res1(x)
+        #x = self.Res2(x)
+        x = self.avgpool(x)
+        x = self.flatten(x)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x) 
+        return x
+# ───────────── replay buffer ─────────────
+class PrioritizedReplayMemory:
+    """
+    Proportional prioritized replay buffer.
+    Each transition has a priority p_i and is sampled with probability:
+        P(i) = p_i^alpha / sum_j p_j^alpha
+    Importance sampling weights are returned to correct the bias.
+    """
+    def __init__(self, capacity: int, alpha: float = 0.6):
         self.capacity = capacity
         self.alpha = alpha
-
+        self.buffer = []
+        self.priorities = []
         self.pos = 0
-        self.size = 0
-
-        self.obs_shape = tuple(obs_shape)
-
-        # Store raw uint8 frames to save memory; network normalises internally.
-        self.states = np.zeros((capacity, *self.obs_shape), dtype=np.uint8)
-        self.next_states = np.zeros((capacity, *self.obs_shape), dtype=np.uint8)
-        self.actions = np.zeros((capacity,), dtype=np.int64)
-        self.rewards = np.zeros((capacity,), dtype=np.float32)
-        self.dones = np.zeros((capacity,), dtype=np.bool_)
-        self.priorities = np.zeros((capacity,), dtype=np.float32)
 
     def __len__(self):
-        return self.size
+        return len(self.buffer)
 
-    def add(self, state, action, reward, next_state, done):
-        idx = self.pos
+    def push(self, *transition):
+        """
+        transition = (state, action, reward, next_state, done)
+        New transitions get max priority so they are sampled at least once.
+        """
+        max_prio = max(self.priorities) if self.priorities else 1.0
 
-        # Convert to uint8 numpy arrays if needed
-        self.states[idx] = np.asarray(state, dtype=np.uint8)
-        self.next_states[idx] = np.asarray(next_state, dtype=np.uint8)
-        self.actions[idx] = int(action)
-        self.rewards[idx] = float(reward)
-        self.dones[idx] = bool(done)
-
-        # New experience gets max priority so it will be sampled at least once
-        max_prio = self.priorities.max() if self.size > 0 else 1.0
-        self.priorities[idx] = max_prio
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(transition)
+            self.priorities.append(max_prio)
+        else:
+            self.buffer[self.pos] = transition
+            self.priorities[self.pos] = max_prio
 
         self.pos = (self.pos + 1) % self.capacity
-        self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int, beta: float = 0.4):
-        assert self.size > 0, "Cannot sample from an empty buffer"
-        assert beta >= 0.0
+        """
+        Sample a minibatch of transitions with priorities.
+        Returns:
+            states, actions, rewards, next_states, dones, indices, weights
+        """
+        if len(self.buffer) == self.capacity:
+            prios = np.array(self.priorities)
+        else:
+            prios = np.array(self.priorities[:len(self.buffer)])
 
-        prios = self.priorities[: self.size]
-        # Small epsilon to avoid zero probability
-        prios = np.where(prios > 0, prios, 1e-6)
         probs = prios ** self.alpha
         probs /= probs.sum()
 
-        indices = np.random.choice(self.size, batch_size, p=probs)
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
 
-        states = self.states[indices]
-        next_states = self.next_states[indices]
-        actions = self.actions[indices]
-        rewards = self.rewards[indices]
-        dones = self.dones[indices]
-
-        # Importance-sampling weights
-        N = self.size
+        N = len(self.buffer)
         weights = (N * probs[indices]) ** (-beta)
         weights /= weights.max()
-        weights = weights.astype(np.float32)
+
+        states, actions, rewards, next_states, dones = zip(
+            *[self.buffer[i] for i in indices]
+        )
 
         return (
-            states,
-            actions,
-            rewards,
-            next_states,
-            dones,
+            np.array(states),
+            np.array(actions),
+            np.array(rewards, dtype=np.float32),
+            np.array(next_states),
+            np.array(dones, dtype=np.float32),
             indices,
-            weights,
+            np.array(weights, dtype=np.float32),
         )
 
     def update_priorities(self, indices, new_priorities):
-        new_priorities = np.asarray(new_priorities, dtype=np.float32)
         for idx, prio in zip(indices, new_priorities):
-            self.priorities[idx] = max(prio, 1e-6)
+            self.priorities[idx] = float(prio)
 
 
-# ───────────────────────── agent ────────────────────────
-class DQNAgent:
+    # ───────────── ε‑greedy & optimise ───────
+
+
+def select_action(state: np.ndarray, net: DQN, step: int,
+                  eps_start : float = 0.1, eps_end: float = 0.01, eps_decay: int = 8000) -> int:
     """
-    DQN agent with:
-      * Dueling network
-      * Double DQN target computation
-      * Prioritized experience replay
-      * Optional n-step returns
-      * Optional NoisyNet exploration (applied to fully-connected layers)
-
-    This class *doesn't* own the environment – training code should:
-      * interact with the env
-      * call `store_transition` each step
-      * call `update` periodically
+    This function selects an action using an ε-greedy policy. 
+    with probability ε, a random action is chosen (exploration),
+    and with probability 1-ε, the action with the highest Q-value is chosen (exploitation) -
+    also supports NoisyNet exploration by resampling noise for each decision.
     """
+    
+    # Calculate current epsilon using decay formula
+    eps = eps_end + (eps_start - eps_end) * math.exp(-step / eps_decay)
+    if random.random() < eps:
+        return random.randrange(net.n_actions)
+    
+    # NoisyNet exploration: resample noise for this decision
+    net.reset_noise()
 
-    def __init__(
-        self,
-        obs_shape,
-        n_actions: int,
-        gamma: float = 0.99,
-        lr: float = 1e-4,
-        batch_size: int = 64,
-        buffer_size: int = 100_000,
-        learn_start: int = 10_000,
-        target_sync_interval: int = 1000,
-        dueling: bool = True,
-        resize_to: Tuple[int, int] = (84, 84),
-        per_alpha: float = 0.6,
-        per_beta_start: float = 0.4,
-        per_beta_frames: int = 200_000,
-        n_step: int = 5,
-        max_grad_norm: float = 10.0,
-        noisy: bool = True,
-        tau: float = 0.005,
-        use_soft_update: bool = True,
-    ):
-        self.obs_shape = tuple(obs_shape)
-        self.n_actions = n_actions
-        self.gamma = gamma
-        self.batch_size = batch_size
-        self.learn_start = learn_start
-        self.target_sync_interval = target_sync_interval
-        self.per_beta_start = per_beta_start
-        self.per_beta_frames = per_beta_frames
-        self.max_grad_norm = max_grad_norm
-        self.n_step = max(1, int(n_step))
-        self.gamma_n = gamma ** self.n_step
-        self.noisy = noisy
+    with torch.no_grad():
+        state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        q_values = net(state_tensor)
+        return int(q_values.argmax().item())
 
-        # Soft update parameter (Polyak averaging)
-        self.tau = tau
-        self.use_soft_update = use_soft_update
+    
+ 
+def optimise(memory: PrioritizedReplayMemory,
+             policy: DQN,
+             target: tDQN,
+             optimiser: optim.Optimizer,
+             batch_size: int,
+             gamma: float,
+             beta: float = 0.4,
+             prio_eps: float = 1e-5):
+    """
+    One optimisation step of DQN with prioritized replay.
 
-        # Online & target networks (distributional DQN removed - was broken)
-        self.online_net = DQN(obs_shape, n_actions, dueling=dueling, noisy=noisy)
-        self.target_net = DQN(obs_shape, n_actions, dueling=dueling, noisy=noisy)
-        self.target_net.load_state_dict(self.online_net.state_dict())
-        self.target_net.eval()
+    Double DQN target:
+    y = r + (1 - d) * gamma * Q_target(s', argmax_a Q_policy(s', a))
 
-        # Move networks to device
-        self.online_net.to(DEVICE)
-        self.target_net.to(DEVICE)
+    - Sample transitions from PrioritizedReplayMemory with probabilities P(i).
+    - Compute importance sampling weights w_i.
+    - Compute standard DQN TD targets with the target network.
+    - Update priorities p_i <- |δ_i|.
+    """
+    # Reset noise for NoisyNet layers
+    #policy.reset_noise()    
 
-        self.optimizer = torch.optim.Adam(self.online_net.parameters(), lr=lr)
 
-        # Prioritized replay buffer
-        self.replay = PrioritizedReplayBuffer(
-            capacity=buffer_size,
-            obs_shape=self.obs_shape,
-            alpha=per_alpha,
-        )
+    if len(memory) < batch_size:
+        return
 
-        # For n-step returns we keep a short FIFO buffer of recent transitions
-        self._n_step_buffer = deque(maxlen=self.n_step)
+    # Sample batch with priorities and IS weights
+    (states, actions, rewards, next_states, dones,
+     indices, weights) = memory.sample(batch_size, beta=beta)
 
-        # Training counters
-        self.num_updates = 0
-        self.num_steps = 0
-        self.beta = per_beta_start
+    states      = torch.as_tensor(states, device=DEVICE, dtype=torch.float32)
+    actions     = torch.as_tensor(actions, device=DEVICE, dtype=torch.int64).unsqueeze(1)
+    rewards     = torch.as_tensor(rewards, device=DEVICE, dtype=torch.float32)
+    next_states = torch.as_tensor(next_states, device=DEVICE, dtype=torch.float32)
+    dones       = torch.as_tensor(dones, device=DEVICE, dtype=torch.float32)
+    weights_t   = torch.as_tensor(weights, device=DEVICE, dtype=torch.float32).unsqueeze(1)
 
-    # ─────────────── action selection ───────────────
-    def act(self, state, epsilon: float = 0.0) -> int:
-        """
-        Epsilon-greedy action selection.
-        For exploration we use BOTH ε-greedy and NoisyNet noise.
-        """
-        # sample fresh noise for this decision (if noisy is enabled)
-        if self.noisy:
-            self.online_net.reset_noise()
+    # Q(s,a) from current policy
+   
+    q_values = policy(states).gather(1, actions)
 
-        if random.random() < epsilon:
-            return random.randrange(self.n_actions)
+    # ---------- Double DQN target ----------
+    with torch.no_grad():
+   
+        # 1) policy net chooses next actions
+        next_q_policy = policy(next_states)                    # [B, |A|]
+        next_actions  = next_q_policy.argmax(dim=1, keepdim=True)  # [B, 1]
 
-        with torch.no_grad():
-            state_t = torch.as_tensor(state, device=DEVICE)
-            q_values = self.online_net(state_t).squeeze(0)
-            action = int(q_values.argmax().item())
-        return action
+        # 2) target net evaluates those actions
+        next_q_target = target(next_states)                    # [B, |A|]
+        max_next_q_values = next_q_target.gather(1, next_actions).squeeze(1)  # [B]
 
-    # ─────────────── n-step helper ───────────────
-    def _get_n_step_info(self):
-        """
-        Aggregate rewards over n steps from the internal n-step buffer.
-        Returns (state, action, n_step_return, next_state, done_flag).
-        """
-        # First transition in the buffer defines (state, action)
-        first = self._n_step_buffer[0]
-        state, action = first["state"], first["action"]
+        # 3) TD target
+        target_values = rewards + (1.0 - dones) * gamma * max_next_q_values  # [B]
+    
+    target_values = target_values.unsqueeze(1)  # [B,1]
 
-        R = 0.0
-        next_state = self._n_step_buffer[-1]["next_state"]
-        done = self._n_step_buffer[-1]["done"]
+    # TD error
+    td_errors = target_values - q_values  # [B,1]
 
-        for idx, transition in enumerate(self._n_step_buffer):
-            R += (self.gamma ** idx) * transition["reward"]
-            if transition["done"]:
-                # Once done, subsequent rewards don't matter and next_state is terminal
-                done = True
-                next_state = transition["next_state"]
-                break
+    # Update priorities: |δ| + eps
+    new_priorities = td_errors.detach().abs().cpu().numpy().flatten() + prio_eps
+    memory.update_priorities(indices, new_priorities)
 
-        return state, action, R, next_state, done
+    # Weighted MSE loss
+    loss = (weights_t * (td_errors ** 2)).mean()
 
-    def store_transition(self, state, action, reward, next_state, done: bool):
-        """
-        Add a transition to the replay buffer, applying n-step processing if enabled.
-        """
-        self.num_steps += 1
+    optimiser.zero_grad()
+    loss.backward()
+    nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+    optimiser.step()
 
-        transition = {
-            "state": np.asarray(state, dtype=np.uint8),
-            "action": int(action),
-            "reward": float(reward),
-            "next_state": np.asarray(next_state, dtype=np.uint8),
-            "done": bool(done),
-        }
-
-        if self.n_step == 1:
-            # Directly store 1-step transition
-            self.replay.add(
-                transition["state"],
-                transition["action"],
-                transition["reward"],
-                transition["next_state"],
-                transition["done"],
-            )
-        else:
-            # n-step: push to local buffer first
-            self._n_step_buffer.append(transition)
-            if len(self._n_step_buffer) == self.n_step:
-                s, a, R, ns, d = self._get_n_step_info()
-                self.replay.add(s, a, R, ns, d)
-                # remove the oldest transition and continue
-                self._n_step_buffer.popleft()
-
-            # If episode ended, flush the remaining transitions
-            if done:
-                while len(self._n_step_buffer) > 0:
-                    s, a, R, ns, d = self._get_n_step_info()
-                    self.replay.add(s, a, R, ns, d)
-                    self._n_step_buffer.popleft()
-
-    # ─────────────── training update ───────────────
-    def _update_beta(self):
-        """
-        Linearly anneal importance-sampling exponent beta towards 1.0
-        over `per_beta_frames` update steps.
-        """
-        self.beta = min(
-            1.0,
-            self.per_beta_start
-            + (1.0 - self.per_beta_start)
-            * (self.num_updates / max(1, self.per_beta_frames)),
-        )
-
-    def can_update(self) -> bool:
-        return len(self.replay) >= self.learn_start
-
-    def update(self) -> Optional[dict]:
-        """
-        Perform a single gradient update from a prioritized replay batch.
-
-        Returns a small metrics dict (loss, mean_Q, beta, etc.) or None if
-        the replay buffer is not yet warmed up (`learn_start` not reached).
-        """
-        if len(self.replay) < self.learn_start:
-            return None
-
-        self.online_net.train()
-        self._update_beta()
-
-        batch_size = self.batch_size
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            dones,
-            indices,
-            weights,
-        ) = self.replay.sample(batch_size, beta=self.beta)
-
-        # Convert to torch tensors
-        states_t = torch.as_tensor(states, device=DEVICE)  # uint8 -> handled in network
-        next_states_t = torch.as_tensor(next_states, device=DEVICE)
-        actions_t = torch.as_tensor(actions, device=DEVICE, dtype=torch.long)
-        rewards_t = torch.as_tensor(rewards, device=DEVICE, dtype=torch.float32)
-        dones_t = torch.as_tensor(dones, device=DEVICE, dtype=torch.float32)
-        weights_t = torch.as_tensor(weights, device=DEVICE, dtype=torch.float32)
-
-        if len(self.replay) < self.learn_start:
-            return None
-
-        self.online_net.train()
-        self._update_beta()
-        
-        # reset noisy layers for this gradient step
-        if self.noisy:
-            self.online_net.reset_noise()
-            self.target_net.reset_noise()
-
-        # Current Q-values for taken actions
-        q_values = self.online_net(states_t)
-        q_values = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
-
-        with torch.no_grad():
-            next_q_online = self.online_net(next_states_t)
-            next_actions = next_q_online.argmax(dim=1)
-
-            next_q_target = self.target_net(next_states_t)
-            next_q_target = next_q_target.gather(1, next_actions.unsqueeze(1)).squeeze(1)
-
-            targets = rewards_t + (1.0 - dones_t) * self.gamma_n * next_q_target
-
-        # Huber loss with per-sample weights
-        td_errors = q_values - targets
-        loss_unreduced = F.smooth_l1_loss(q_values, targets, reduction="none")
-        loss = (loss_unreduced * weights_t).mean()
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        grad_norm = None
-        if self.max_grad_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.online_net.parameters(), self.max_grad_norm
-            )
-        self.optimizer.step()
-
-        # Update priorities based on absolute TD error
-        new_prios = td_errors.detach().abs().cpu().numpy() + 1e-6
-        self.replay.update_priorities(indices, new_prios)
-
-        self.num_updates += 1
-
-        # Sync target network (soft or hard update)
-        if self.use_soft_update:
-            # Polyak averaging: θ_target = τ * θ_online + (1 - τ) * θ_target
-            for target_param, online_param in zip(
-                self.target_net.parameters(), self.online_net.parameters()
-            ):
-                target_param.data.copy_(
-                    self.tau * online_param.data + (1.0 - self.tau) * target_param.data
-                )
-        elif self.num_updates % self.target_sync_interval == 0:
-            # Hard update every target_sync_interval steps
-            self.target_net.load_state_dict(self.online_net.state_dict())
-
-        metrics = {
-            "loss": float(loss.item()),
-            "mean_q": float(q_values.mean().item()),
-            "beta": float(self.beta),
-            "buffer_size": len(self.replay),
-            "grad_norm": float(grad_norm) if grad_norm is not None else 0.0,
-        }
-        return metrics
-
-    # ─────────────── persistence helpers ───────────────
-    def save(self, path: str):
-        """
-        Save online network weights to a .pt file.
-        """
-        torch.save(self.online_net.state_dict(), path)
-
-    def load(self, path: str, strict: bool = True):
-        """
-        Load weights into the online network. The target network is also synced.
-        """
-        state_dict = torch.load(path, map_location=DEVICE)
-        self.online_net.load_state_dict(state_dict, strict=strict)
-        self.target_net.load_state_dict(self.online_net.state_dict())
